@@ -1,0 +1,221 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Physics Workshop – Platform, Lava, Goal (minimal diff)</title>
+<canvas id="cv" width="720" height="400" style="background:#0e1528;display:block;margin:16px auto;border:1px solid #223;border-radius:12px"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+// ── ワールド ───────────────────────────────
+const floor = { x:0, y:360, w:cv.width, h:40, color:'#203060' };
+const lava  = { x:380, y:330, w:240, h:30, color:'#d94b4b' };
+
+// 浮遊足場（x は左端。中央を基準に往復）
+const plat = {
+  x: 380 + 240/2 - 140/2,
+  y: lava.y - 80,
+  w: 140, h: 16,
+  t: 0, speed: 1.2, range: 160, baseCenter: 380 + 240/2,
+  prevX: 0
+};
+
+const player = { x:60, y:280, w:28, h:36 };
+const goal   = { x: cv.width - 64, y: floor.y - 44, w: 28, h: 44 };
+let reachedGoal = false;
+
+// ── 物理パラメータ ─────────────────────────
+let vx = 0;
+let vy = 0;
+const speed    = 260;
+const jump     = 700;
+const g        = 2000;
+const friction = 0.88;
+let isGrounded = false;
+let groundedOn = null; // 'floor' | 'platform' | null
+
+// ── 入力 ────────────────────────────────────
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (reachedGoal) reset(); // ゴール後：何かキーでリスタート
+  if (e.code === 'Space' && isGrounded && !reachedGoal) {
+    vy = -jump;
+  }
+});
+addEventListener('keyup', e => {
+  keys[e.key] = false;
+});
+
+// ── ユーティリティ ─────────────────────────
+function aabb(r1, r2) {
+  return (r1.x < r2.x + r2.w && r1.x + r1.w > r2.x &&
+          r1.y < r2.y + r2.h && r1.y + r1.h > r2.y);
+}
+
+function reset() {
+  player.x = 60;
+  player.y = 280;
+  vx = 0;
+  vy = 0;
+  reachedGoal = false;
+  isGrounded = false;
+  groundedOn = null;
+}
+
+// ── 衝突処理：床 ───────────────────────────
+function collideWithFloor() {
+  const bottom = player.y + player.h;
+  if (bottom > floor.y) {
+    player.y = floor.y - player.h;
+    vy = 0;
+    isGrounded = true;
+    groundedOn = 'floor';
+  }
+}
+
+// ── 衝突処理：浮遊足場（上からのみ着地） ─────
+function collideWithPlatform(dt, dxPlat) {
+  // 今フレームの矩形
+  const pNow = { x: player.x, y: player.y, w: player.w, h: player.h };
+  const pr   = { x: plat.x,   y: plat.y,   w: plat.w,   h: plat.h };
+  if (!aabb(pNow, pr)) return;
+
+  const prevBottom = (player.y - vy * dt) + player.h;
+  const nowBottom  = player.y + player.h;
+  const top        = plat.y;
+
+  const platLeft   = plat.x;
+  const platRight  = plat.x + plat.w;
+  const overlapX   = (player.x + player.w) > platLeft && player.x < platRight;
+
+  // 上から来て、境界をまたいだ場合のみ着地
+  if (vy >= 0 && overlapX && prevBottom <= top && nowBottom >= top) {
+    player.y = top - player.h; // 吸着
+    vy = 0;
+    isGrounded = true;
+    groundedOn = 'platform';
+  }
+}
+
+// ── 衝突処理：ラバ ─────────────────────────
+function collideWithLava() {
+  if (aabb({ x:player.x, y:player.y, w:player.w, h:player.h }, lava)) {
+    reset();
+  }
+}
+
+// ── ゴール判定 ─────────────────────────────
+function checkGoal() {
+  if (aabb({ x:player.x, y:player.y, w:player.w, h:player.h }, goal)) {
+    reachedGoal = true;
+  }
+}
+
+// ── 更新処理 ────────────────────────────────────
+let last = performance.now();
+function update(dt) {
+  if (reachedGoal) return;
+
+  // 足場の移動
+  plat.prevX = plat.x;
+  plat.t += plat.speed * dt;
+  const centerX = plat.baseCenter + Math.cos(plat.t) * plat.range;
+  plat.x = centerX - plat.w / 2;
+  const dxPlat = plat.x - plat.prevX;
+  const vPlat  = dxPlat / dt;           
+
+  // 入力 → 水平速度
+  if (keys['ArrowLeft']) {
+    vx = -speed;
+  } else if (keys['ArrowRight']) {
+    vx =  speed;
+  } else if (isGrounded && groundedOn === 'floor') {
+    // 地面上：そのまま摩擦
+    vx *= friction;
+  } else if (isGrounded && groundedOn === 'platform') {
+    // 浮遊足場上：足場速度に対する相対速度に摩擦をかける
+    const rel = vx - vPlat;
+    vx = vPlat + rel * friction;
+  }
+
+  // 位置更新
+  player.x += vx * dt;
+  vy += g * dt;
+  player.y += vy * dt;
+
+  // 画面外に出ない
+  player.x = Math.max(0, Math.min(cv.width - player.w, player.x));
+
+  // 衝突判定
+  isGrounded = false;
+  groundedOn = null;
+  collideWithFloor();
+  collideWithPlatform(dt, dxPlat);
+  collideWithLava();
+  checkGoal();
+}
+
+// ゴール
+function drawFlag(gx, gy, w, h) {
+  // ポール
+  ctx.fillStyle = '#d1d5db';
+  ctx.fillRect(gx, gy, 4, h);
+  // 旗
+  ctx.fillStyle = '#22c55e';
+  ctx.beginPath();
+  ctx.moveTo(gx + 4,     gy + 6);
+  ctx.lineTo(gx + 4 + w, gy + 14);
+  ctx.lineTo(gx + 4,     gy + 22);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  // 床
+  ctx.fillStyle = floor.color;
+  ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
+
+  // 危険エリア(赤いエリア)
+  ctx.fillStyle = lava.color;
+  ctx.fillRect(lava.x, lava.y, lava.w, lava.h);
+
+  // 浮遊足場
+  ctx.fillStyle = '#2e446e';
+  ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+
+  // プレイヤー（接地:水色／空中:黄）
+  ctx.fillStyle = isGrounded ? '#7ef5e1' : '#ffd166';
+  ctx.fillRect(player.x, player.y, player.w, player.h);
+
+  // ゴール
+  drawFlag(goal.x, goal.y, 22, goal.h);
+
+  // 画面上部の説明テキスト
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '12px ui-monospace,monospace';
+  const msg = reachedGoal
+    ? 'GOAL! 何かキーを押すとリスタート'
+    : '←/→: 移動   Space: ジャンプ   危険エリアを越えてゴールを目指そう';
+  ctx.fillText(msg, 10, 18);
+
+  if (reachedGoal) {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = '#22c55e';
+    ctx.font = '24px system-ui, sans-serif';
+    ctx.fillText('GOAL!', cv.width / 2 - 40, cv.height / 2);
+  }
+}
+
+// ── ループ ─────────────────────────────────
+function loop(now) {
+  const dt = Math.min(0.033, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
